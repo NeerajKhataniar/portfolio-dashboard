@@ -1,68 +1,25 @@
-import yahooFinance from "yahoo-finance2";
 import { NextResponse } from "next/server";
-
-// Map our symbols to Yahoo Finance format
 function toYahooSymbol(sym, exchange) {
   if (sym === "BTC") return "BTC-CAD";
   if (sym === "ETH") return "ETH-CAD";
   if (sym === "KILO.B") return "KILO-B.TO";
-  // TSX / CBOE Canada listed
-  if (["TSX", "CBOE CANADA"].includes(exchange) || ["XTSE", "NEOE"].includes(exchange)) {
-    return sym + ".TO";
-  }
-  // US-listed
+  if (["TSX", "XTSE", "CBOE CANADA", "NEOE"].includes(exchange)) return sym + ".TO";
   return sym;
 }
-
 export async function POST(request) {
   try {
     const { holdings } = await request.json();
-    if (!holdings || !Array.isArray(holdings)) {
-      return NextResponse.json({ error: "Invalid holdings" }, { status: 400 });
-    }
-
+    if (!holdings || !Array.isArray(holdings)) return NextResponse.json({ error: "Invalid" }, { status: 400 });
     const symbolMap = {};
-    holdings.forEach((h) => {
-      const ySymbol = toYahooSymbol(h.sym, h.exchange || h.mic || "");
-      symbolMap[h.sym] = ySymbol;
-    });
-
-    const uniqueYahooSymbols = [...new Set(Object.values(symbolMap))];
-
-    // Fetch quotes in batches to avoid rate limits
-    const batchSize = 10;
-    const results = {};
-
-    for (let i = 0; i < uniqueYahooSymbols.length; i += batchSize) {
-      const batch = uniqueYahooSymbols.slice(i, i + batchSize);
-      const promises = batch.map(async (ySym) => {
-        try {
-          const quote = await yahooFinance.quote(ySym);
-          return { symbol: ySym, price: quote.regularMarketPrice, currency: quote.currency, change: quote.regularMarketChangePercent };
-        } catch (e) {
-          console.error(`Failed to fetch ${ySym}:`, e.message);
-          return { symbol: ySym, price: null, currency: null, change: null };
-        }
-      });
-      const batchResults = await Promise.all(promises);
-      batchResults.forEach((r) => { results[r.symbol] = r; });
-    }
-
-    // Map back to original symbols
+    holdings.forEach((h) => { symbolMap[h.sym] = toYahooSymbol(h.sym, h.exchange || ""); });
+    const yahooSymbols = [...new Set(Object.values(symbolMap))].join(",");
+    const res = await fetch("https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + encodeURIComponent(yahooSymbols), { headers: { "User-Agent": "Mozilla/5.0" } });
+    const data = await res.json();
+    const quotes = data?.quoteResponse?.result || [];
+    const quoteMap = {};
+    quotes.forEach((q) => { quoteMap[q.symbol] = { price: q.regularMarketPrice, currency: q.currency, change: q.regularMarketChangePercent }; });
     const prices = {};
-    Object.entries(symbolMap).forEach(([origSym, ySym]) => {
-      if (results[ySym]) {
-        prices[origSym] = {
-          price: results[ySym].price,
-          currency: results[ySym].currency,
-          change: results[ySym].change,
-        };
-      }
-    });
-
+    Object.entries(symbolMap).forEach(([orig, ySym]) => { if (quoteMap[ySym]) prices[orig] = quoteMap[ySym]; });
     return NextResponse.json({ prices, fetchedAt: new Date().toISOString() });
-  } catch (e) {
-    console.error("Price fetch error:", e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
+  } catch (e) { return NextResponse.json({ error: e.message }, { status: 500 }); }
 }
