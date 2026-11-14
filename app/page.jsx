@@ -52,6 +52,14 @@ Object.assign(GEO_DATA, {
   VCB:{Canada:100}, VAB:{Canada:100}, VBU:{US:100}, VBG:{"Intl developed":100}, VWOB:{Emerging:100}, ZHY:{US:100},
 });
 
+// Currency, duration and equity-beta look-through. Approximate: verify against fund fact sheets.
+const GEO_CCY = {Canada:"CAD",US:"USD","Intl developed":"Other developed",Emerging:"Emerging markets",Global:"Mixed / unknown"};
+// Overrides: CAD-hedged bond funds count as CAD; gold is priced in USD; crypto is its own bucket.
+const CCY_DATA = {VBU:{CAD:100},VBG:{CAD:100},ZHY:{CAD:100},VCB:{CAD:100},VAB:{CAD:100},ZFL:{CAD:100},VWOB:{USD:100},OUNZ:{USD:100},GLDM:{USD:100},BTC:{Crypto:100},ETH:{Crypto:100}};
+const CCY_COLORS = {CAD:"#E24B4A",USD:"#378ADD","Other developed":"#1D9E75","Emerging markets":"#EF9F27",Crypto:"#7F77DD","Mixed / unknown":"#888"};
+const DURATION = {VAB:7.3,VCB:5.8,VBU:6.0,VBG:7.0,VWOB:6.7,ZHY:3.5,ZFL:17.0}; // years, approximate
+const CREDIT_FUNDS = {VCB:"Corporate",ZHY:"High yield",VWOB:"Emerging-market government"};
+
 // ===== TPA (total portfolio approach) =====
 const ROLES = ["Core (reference)","Defensive / income","Real assets","Private-market proxy","Equity tilt","Single stock","Speculative option","Inflation hedge","Liquidity","Untagged"];
 const DEFAULT_ROLES = {XEQT:"Core (reference)",INCOME:"Defensive / income",GLIX:"Real assets","CSH.UN":"Real assets",OUNZ:"Inflation hedge",GLDM:"Inflation hedge",STCK:"Private-market proxy",XST:"Equity tilt",ZEB:"Equity tilt",BTC:"Speculative option",ETH:"Speculative option",CASH:"Liquidity"};
@@ -507,6 +515,59 @@ export default function Page() {
   const bucketC = ukPen + n("workplaceDc") + n("dbCommuted");
   const setT = k => val => setTpa(t=>({...t,[k]:val}));
 
+  // ===== Look-through: currency, duration, equity beta =====
+  const ccyExp = useMemo(() => {
+    const c = {};
+    holdings.forEach(h => {
+      let d = CCY_DATA[h.sym];
+      if (!d) {
+        const g = GEO_DATA[h.sym];
+        if (h.category === "cash") d = {CAD:100};
+        else if (g) { d = {}; Object.entries(g).forEach(([k,p]) => { const cc = GEO_CCY[k] || "Mixed / unknown"; d[cc] = (d[cc]||0) + p; }); }
+        else d = {"Mixed / unknown":100};
+      }
+      Object.entries(d).forEach(([k,p]) => { c[k] = (c[k]||0) + h.mvCad*p/100; });
+    });
+    return Object.entries(c).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({k,v,p:totalCad>0?v/totalCad:0}));
+  }, [holdings, totalCad]);
+
+  const durRows = useMemo(() => {
+    const m = {};
+    holdings.filter(h=>h.category==="bond").forEach(h => {
+      if (!m[h.sym]) m[h.sym] = {sym:h.sym, name:h.name, mv:0, d: DURATION[h.sym] ?? null, kind: CREDIT_FUNDS[h.sym] || "Aggregate / government"};
+      m[h.sym].mv += h.mvCad;
+    });
+    return Object.values(m).sort((a,b)=>b.mv-a.mv);
+  }, [holdings]);
+  const bondVal = durRows.reduce((a,r)=>a+r.mv,0);
+  const durKnownVal = durRows.filter(r=>r.d!=null).reduce((a,r)=>a+r.mv,0);
+  const durDollars = durRows.filter(r=>r.d!=null).reduce((a,r)=>a+r.mv*r.d,0);
+  const bondDur = durKnownVal>0 ? durDollars/durKnownVal : 0;
+  const portDur = totalCad>0 ? durDollars/totalCad : 0;
+  const creditShare = bondVal>0 ? durRows.filter(r=>CREDIT_FUNDS[r.sym]).reduce((a,r)=>a+r.mv,0)/bondVal : 0;
+
+  // Beta to global equity, implied by the same placeholder risk assumptions as the TPA tab
+  const betaOf = u => {
+    if (u.category === "cash") return 0;
+    if ((roles[u.row] || DEFAULT_ROLES[u.row]) === "Core (reference)") return 1;
+    const rho = u.category === "equity" ? RISK_SAME.equity : (RISK_CORR[[u.category,"equity"].sort().join("|")] ?? 0.3);
+    return rho * (RISK_VOL[u.category] ?? 0.15) / RISK_VOL.equity;
+  };
+  const betaRows = useMemo(() => {
+    const m = {};
+    tpaUnits.forEach(u => {
+      const core = (roles[u.row] || DEFAULT_ROLES[u.row]) === "Core (reference)";
+      const k = core ? "Core (reference)" : u.category === "equity" ? "Other equity ETFs" : (CL[u.category] || u.category);
+      if (!m[k]) m[k] = {k, mv:0, bmv:0, c: core ? "#0F6E56" : (CC[u.category] || "#888")};
+      m[k].mv += u.mv; m[k].bmv += u.mv*betaOf(u);
+    });
+    return Object.values(m).filter(r=>r.mv>0).sort((a,b)=>b.bmv-a.bmv);
+  }, [tpaUnits, roles]);
+  const betaDollars = betaRows.reduce((a,r)=>a+r.bmv,0);
+  const portBeta = totalCad>0 ? betaDollars/totalCad : 0;
+  const bondBeta = RISK_CORR["bond|equity"]*RISK_VOL.bond/RISK_VOL.equity;
+  const wolBeta = wolTotal>0 ? (betaDollars + ukPen + n("workplaceDc") + n("dbCommuted")*bondBeta)/wolTotal : 0;
+
   // ========== RENDER ==========
 
   if (!rawHoldings) {
@@ -719,6 +780,64 @@ export default function Page() {
               </div>
             </div>)}
           </div>
+        </div>
+        <div style={{...s.g("1fr 1fr"),marginBottom:12}}>
+          <div style={s.card}>
+            <div style={s.sec}>Currency exposure</div>
+            <Bar h={18} segments={ccyExp.map(c=>({label:c.k,pct:c.p,color:CCY_COLORS[c.k]||"#888"}))}/>
+            <div style={{marginTop:8}}>
+              {ccyExp.map(c=><div key={c.k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <div style={{width:9,height:9,borderRadius:2,background:CCY_COLORS[c.k]||"#888",flexShrink:0}}/>
+                <span style={{fontSize:12,flex:1}}>{c.k}</span>
+                <span style={{fontSize:11,color:"var(--text-secondary)"}}>{fmt(c.v)}</span>
+                <span style={{fontSize:12,fontWeight:500,minWidth:42,textAlign:"right"}}>{pct(c.p)}</span>
+              </div>)}
+            </div>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:6}}>
+              Based on where each fund invests, not where it is listed. CAD-hedged bond funds count as CAD and gold as USD.
+              {(n("ukPensionGbp")>0||n("studentLoanGbp")>0)&&<span> Outside this CSV you also hold {fmt(ukPen)} of pension and owe {fmt(n("studentLoanGbp")*n("gbpCad"))} of student loan, both in GBP.</span>}
+            </div>
+          </div>
+          <div style={s.card}>
+            <div style={s.sec}>Equity beta</div>
+            <div style={s.g("1fr 1fr")}>
+              <M label="Liquid portfolio" value={portBeta.toFixed(2)} sub="1.00 = global equity"/>
+              <M label="Whole balance sheet" value={wolBeta.toFixed(2)} sub="Including pensions"/>
+            </div>
+            <div style={{marginTop:10}}>
+              {betaRows.map(r=><div key={r.k} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                <div style={{width:9,height:9,borderRadius:2,background:r.c,flexShrink:0}}/>
+                <span style={{fontSize:12,flex:1}}>{r.k}</span>
+                <span style={{fontSize:11,color:"var(--text-secondary)"}}>beta {(r.mv>0?r.bmv/r.mv:0).toFixed(2)}</span>
+                <span style={{fontSize:12,fontWeight:500,minWidth:42,textAlign:"right"}}>{pct(betaDollars>0?r.bmv/betaDollars:0)}</span>
+              </div>)}
+            </div>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:6}}>The percentage is each group&apos;s share of the portfolio&apos;s equity beta. Betas come from the placeholder volatility and correlation assumptions on the TPA tab, not from price history.</div>
+          </div>
+        </div>
+        <div style={{...s.card,marginBottom:12}}>
+          <div style={s.sec}>Interest-rate exposure (duration)</div>
+          {durRows.length===0 ? <div style={{fontSize:12,color:"var(--text-secondary)"}}>No bond funds held.</div> : <div>
+            <div style={s.g("repeat(auto-fit, minmax(150px, 1fr))")}>
+              <M label="Bond sleeve duration" value={bondDur.toFixed(1)+" yrs"} sub={`${fmt(bondVal)} in bonds`}/>
+              <M label="Portfolio duration" value={portDur.toFixed(2)+" yrs"} sub="Bonds only, as a share of everything"/>
+              <M label="If rates rise 1%" value={fmt(-durDollars/100)} color="var(--red)" sub={`About ${pct(-portDur/100)} of the portfolio`}/>
+              <M label="Credit share of bonds" value={pct(creditShare)} sub="Corporate, high yield, emerging"/>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse",marginTop:10}}>
+              <thead><tr>{["Fund","Type","Value","Duration","Share of bonds"].map(h=><th key={h} style={{...s.th,cursor:"default"}}>{h}</th>)}</tr></thead>
+              <tbody>
+                {durRows.map(r=><tr key={r.sym}>
+                  <td style={{...s.td,fontWeight:500}}>{r.sym}</td>
+                  <td style={s.td}>{r.kind}</td>
+                  <td style={s.td}>{fmt(r.mv)}</td>
+                  <td style={s.td}>{r.d!=null?r.d.toFixed(1)+" yrs":"unknown"}</td>
+                  <td style={s.td}>{pct(bondVal>0?r.mv/bondVal:0)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:8}}>Durations are approximate figures stored in the app, so check them against current fund fact sheets. The rate estimate covers bond funds only and ignores credit spreads, which usually widen when equities fall.</div>
+          </div>}
         </div>
         <div style={s.card}>
           <div style={s.sec}>Top stock exposures (ETF look-through)</div>
@@ -1080,6 +1199,7 @@ export default function Page() {
         <div style={s.g("repeat(auto-fit, minmax(150px, 1fr))")}>
           <M label="Whole-of-life assets" value={fmt(wolTotal)} sub="Liquid portfolio plus pensions"/>
           <M label="Equity-like share" value={pct(wolEq)} sub="Of whole-of-life assets"/>
+          <M label="Equity beta" value={wolBeta.toFixed(2)} sub="Whole balance sheet, 1.00 = global equity"/>
           <M label="Locked (Bucket C)" value={pct(wolTotal>0?bucketC/wolTotal:0)} sub={fmt(bucketC)}/>
           <M label="Credit line drawn" value={fmt(creditDrawn)} color={creditDrawn>0?"var(--red)":"var(--green)"} sub={creditUse!=null?`${pct(creditUse)} of limit`:"Set the limit on the TPA tab"}/>
         </div>
