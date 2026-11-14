@@ -40,6 +40,46 @@ const TOP_STOCKS = {
   VUN:[{name:"Apple",ticker:"AAPL",pct:7.0},{name:"Microsoft",ticker:"MSFT",pct:6.5},{name:"Nvidia",ticker:"NVDA",pct:5.8},{name:"Amazon",ticker:"AMZN",pct:3.5}],
 };
 
+// Rough look-through data for newer holdings. Approximate: verify against fund fact sheets.
+Object.assign(SECTOR_DATA, {
+  ZEB:{Financials:100}, XST:{"Consumer defensive":100}, AAPL:{Technology:100},
+  "CSH.UN":{"Real estate":100}, TNZ:{Energy:100}, STCK:{Financials:100},
+  GLIX:{Utilities:50,Industrials:50},
+});
+Object.assign(GEO_DATA, {
+  ZEB:{Canada:100}, XST:{Canada:100}, AAPL:{US:100}, "CSH.UN":{Canada:100}, TNZ:{Canada:100},
+  STCK:{Global:100}, GLIX:{Global:100}, VYM:{US:100},
+  VCB:{Canada:100}, VAB:{Canada:100}, VBU:{US:100}, VBG:{"Intl developed":100}, VWOB:{Emerging:100}, ZHY:{US:100},
+});
+
+// ===== TPA (total portfolio approach) =====
+const ROLES = ["Core (reference)","Defensive / income","Real assets","Private-market proxy","Equity tilt","Single stock","Speculative option","Inflation hedge","Liquidity","Untagged"];
+const DEFAULT_ROLES = {XEQT:"Core (reference)",INCOME:"Defensive / income",GLIX:"Real assets","CSH.UN":"Real assets",OUNZ:"Inflation hedge",GLDM:"Inflation hedge",STCK:"Private-market proxy",XST:"Equity tilt",ZEB:"Equity tilt",BTC:"Speculative option",ETH:"Speculative option",CASH:"Liquidity"};
+const REPLACES = ["Global equity","Bonds","Cash","Nothing (added risk)","—"];
+const NON_SATELLITE = ["Core (reference)","Liquidity","Defensive / income"];
+// Illustrative risk assumptions (annual volatility and correlations). Placeholders, not estimated from data.
+const RISK_VOL = {equity:0.15,bond:0.06,gold:0.15,crypto:0.60,stock:0.30,cash:0};
+const RISK_SAME = {equity:0.85,bond:0.80,gold:1,crypto:0.80,stock:0.40,cash:0};
+const RISK_CORR = {"bond|equity":0.2,"equity|gold":0.1,"crypto|equity":0.4,"equity|stock":0.65,"bond|gold":0.2,"bond|crypto":0.1,"bond|stock":0.15,"crypto|gold":0.1,"gold|stock":0.05,"crypto|stock":0.35};
+// Policy limits default to the written policy. Dollar amounts default to 0: enter your own (stored in this browser only).
+const DEFAULT_TPA = {satMaxPct:20,cryptoMaxPct:8,cryptoCapCad:0,cashMonthsMin:2,cashMonthsMax:3,monthlySpend:0,creditLimit:0,otherCash:0,ukPensionGbp:0,gbpCad:1.95,dbCommuted:0,workplaceDc:0,studentLoanGbp:0};
+
+function NumIn({label,value,onChange,step=100,hint}){
+  return <label style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:6}}>
+    <span style={{fontSize:12,color:"var(--text-secondary)"}}>{label}{hint&&<span style={{fontSize:10,color:"var(--text-tertiary)"}}> · {hint}</span>}</span>
+    <input type="number" value={value} step={step} onChange={e=>onChange(e.target.value===""?"":+e.target.value)}
+      style={{width:110,fontSize:12,padding:"3px 6px",textAlign:"right",background:"var(--bg-secondary)",border:"0.5px solid var(--border)",borderRadius:"var(--radius)",color:"var(--text-primary)"}}/>
+  </label>;
+}
+function Check({ok,label,detail}){
+  const c = ok==null?"#888":ok?"#1D9E75":"#E24B4A";
+  return <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"0.5px solid var(--border)"}}>
+    <span style={{fontSize:10,padding:"2px 7px",borderRadius:"var(--radius)",background:c+"1a",color:c,fontWeight:500,whiteSpace:"nowrap",minWidth:54,textAlign:"center"}}>{ok==null?"NOT SET":ok?"OK":"BREACH"}</span>
+    <span style={{fontSize:12,flex:1}}>{label}</span>
+    <span style={{fontSize:12,fontWeight:500,textAlign:"right"}}>{detail}</span>
+  </div>;
+}
+
 const STRESS = {
   recession:{name:"Recession",desc:"Broad equity decline, bonds rally, flight to safety.",impacts:{equity:-0.18,bond:0.04,gold:0.08,crypto:-0.35,stock:-0.22,cash:0,sectors:{Technology:-0.25,Financials:-0.20,"Consumer cyclical":-0.28,Industrials:-0.18,Materials:-0.15,Healthcare:-0.08,Communication:-0.15,"Consumer defensive":-0.05,Utilities:-0.05,Energy:-0.22,"Real estate":-0.20}}},
   rate_hike:{name:"Rate hike +100bps",desc:"Bonds fall, rate-sensitive equities drop, financials benefit.",impacts:{equity:-0.04,bond:-0.06,gold:-0.02,crypto:-0.08,stock:-0.05,cash:0,sectors:{Technology:-0.06,Utilities:-0.07,"Real estate":-0.08,Financials:0.02}}},
@@ -71,11 +111,13 @@ function parseWealthsimpleCSV(csvText) {
     const qty = parseFloat(r.Quantity) || 0;
 
     // Detect cash rows: no symbol but has a market value, or security type is empty/cash-like
-    if (!sym && mv > 0) {
+    // Cash rows: Wealthsimple exports them as Symbol "CAD", Security Type "CURRENCY". A negative balance is the credit line.
+    if (secType === "CURRENCY" && mv === 0) return null;
+    if (secType === "CURRENCY" || (!sym && mv !== 0)) {
       return {
-        sym: "CASH", name: "Cash", acct: r["Account Name"] || "", acctType: r["Account Type"] || "",
+        sym: mv < 0 ? "LOAN" : "CASH", name: mv < 0 ? "Credit line drawn" : "Cash", acct: r["Account Name"] || "", acctType: r["Account Type"] || "",
         acctClass: r["Account Classification"] || "", acctNum: (r["Account Number"] || "").slice(0, 4),
-        type: "cash", category: "cash", qty: mv, price: 1, pCurr: "CAD", mv, mvCurr: "CAD",
+        type: mv < 0 ? "debt" : "cash", category: mv < 0 ? "debt" : "cash", qty: mv, price: 1, pCurr: "CAD", mv, mvCurr: "CAD",
         book: mv, unreal: 0, unrealCurr: "CAD", exchange: "", mic: "", mer: null,
       };
     }
@@ -183,6 +225,10 @@ export default function Page() {
   const [stockNotes, setStockNotes] = useState({});
   // FIX #4: Activities-based DCA data replaces stockBuyDates
   const [activitiesTrades, setActivitiesTrades] = useState({});
+  // TPA: role tags, what each position replaces, and policy / balance-sheet inputs
+  const [roles, setRoles] = useState({});
+  const [replaces, setReplaces] = useState({});
+  const [tpa, setTpa] = useState(DEFAULT_TPA);
 
   useEffect(() => {
     try {
@@ -198,6 +244,9 @@ export default function Page() {
         if (p.stockThemes) setStockThemes(p.stockThemes);
         if (p.stockNotes) setStockNotes(p.stockNotes);
         if (p.activitiesTrades) setActivitiesTrades(p.activitiesTrades);
+        if (p.roles) setRoles(p.roles);
+        if (p.replaces) setReplaces(p.replaces);
+        if (p.tpa) setTpa(t => ({...DEFAULT_TPA, ...p.tpa}));
       }
       const savedHoldings = localStorage.getItem("portfolio-holdings");
       if (savedHoldings) {
@@ -209,8 +258,8 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    try { localStorage.setItem("portfolio-settings", JSON.stringify({targets,subTargets,feeBudget,sectorTargets,threshold,guardrails,stockThemes,stockNotes,activitiesTrades})); } catch(e){}
-  }, [targets, subTargets, feeBudget, sectorTargets, threshold, guardrails, stockThemes, stockNotes, activitiesTrades]);
+    try { localStorage.setItem("portfolio-settings", JSON.stringify({targets,subTargets,feeBudget,sectorTargets,threshold,guardrails,stockThemes,stockNotes,activitiesTrades,roles,replaces,tpa})); } catch(e){}
+  }, [targets, subTargets, feeBudget, sectorTargets, threshold, guardrails, stockThemes, stockNotes, activitiesTrades, roles, replaces, tpa]);
 
   useEffect(() => {
     if (rawHoldings) {
@@ -264,7 +313,7 @@ export default function Page() {
       const res = await fetch("/api/prices", {
         method: "POST",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({holdings: rawHoldings.filter(h => h.sym !== "CASH").map(h => ({sym: h.sym, exchange: h.exchange || h.mic}))})
+        body: JSON.stringify({holdings: rawHoldings.filter(h => h.category !== "cash" && h.category !== "debt").map(h => ({sym: h.sym, exchange: h.exchange || h.mic}))})
       });
       const data = await res.json();
       if (data.prices) {
@@ -279,7 +328,7 @@ export default function Page() {
 
   const holdings = useMemo(() => {
     if (!rawHoldings) return [];
-    return rawHoldings.map(h => {
+    return rawHoldings.filter(h => h.category !== "debt").map(h => {
       if (h.category === "cash") {
         return {...h, mvCad: h.mv, unrealCad: 0, annualFee: 0, change: null};
       }
@@ -380,6 +429,84 @@ export default function Page() {
     });
   }, [stockHoldings, topStocks]);
 
+  // ===== TPA: role tags, risk contribution, policy checks, whole balance sheet =====
+  const creditDrawn = useMemo(() => -(rawHoldings||[]).filter(h=>h.category==="debt").reduce((a,h)=>a+h.mv,0), [rawHoldings]);
+
+  // Risk units: one per symbol; the managed account is looked through to its ETFs but shown as one row
+  const tpaUnits = useMemo(() => {
+    const m = {};
+    holdings.forEach(h => {
+      const isCash = h.category === "cash";
+      const managed = h.acctClass === "Managed" && !isCash;
+      const key = isCash ? "CASH" : managed ? "INCOME:"+h.sym : h.sym;
+      if (!m[key]) m[key] = {key, row: isCash ? "CASH" : managed ? "INCOME" : h.sym, name: h.name, category: h.category, mv: 0};
+      m[key].mv += h.mvCad;
+    });
+    return Object.values(m);
+  }, [holdings]);
+
+  const tpaRisk = useMemo(() => {
+    const tot = tpaUnits.reduce((a,u)=>a+u.mv,0);
+    if (tot <= 0) return {vol:0, rc:{}};
+    const w = tpaUnits.map(u=>u.mv/tot), v = tpaUnits.map(u=>RISK_VOL[u.category] ?? 0.15);
+    const rho = (i,j) => {
+      if (i===j) return 1;
+      const a = tpaUnits[i].category, b = tpaUnits[j].category;
+      if (a===b) return RISK_SAME[a] ?? 0.8;
+      return RISK_CORR[[a,b].sort().join("|")] ?? 0.3;
+    };
+    const mc = w.map((_,i)=>w.reduce((acc,wj,j)=>acc+wj*v[i]*v[j]*rho(i,j),0));
+    const variance = w.reduce((a,wi,i)=>a+wi*mc[i],0);
+    const rc = {};
+    tpaUnits.forEach((u,i)=>{rc[u.row]=(rc[u.row]||0)+(variance>0?w[i]*mc[i]/variance:0);});
+    return {vol: Math.sqrt(variance), rc};
+  }, [tpaUnits]);
+
+  const tpaRows = useMemo(() => {
+    const m = {}, tot = tpaUnits.reduce((a,u)=>a+u.mv,0);
+    tpaUnits.forEach(u => {
+      if (!m[u.row]) m[u.row] = {row:u.row, name: u.row==="INCOME" ? "Income portfolio (managed)" : u.row==="CASH" ? "Cash" : u.name, category: u.row==="INCOME" ? "mixed" : u.category, mv:0};
+      m[u.row].mv += u.mv;
+    });
+    return Object.values(m).map(r => {
+      const role = roles[r.row] || DEFAULT_ROLES[r.row] || (r.category==="stock" ? "Single stock" : "Untagged");
+      const rep = replaces[r.row] || (role==="Core (reference)"||role==="Liquidity" ? "—" : "Global equity");
+      return {...r, w: tot>0 ? r.mv/tot : 0, rc: tpaRisk.rc[r.row]||0, role, replaces: rep, sat: !NON_SATELLITE.includes(role)};
+    }).sort((a,b)=>b.rc-a.rc);
+  }, [tpaUnits, tpaRisk, roles, replaces]);
+
+  const n = k => +tpa[k] || 0;
+  const liquidCash = byCat.cash || 0;
+  const cashAll = liquidCash + n("otherCash");
+  const bucketA = totalCad - liquidCash;
+  const satVal = tpaRows.filter(r=>r.sat).reduce((a,r)=>a+r.mv,0);
+  const satRisk = tpaRows.filter(r=>r.sat).reduce((a,r)=>a+r.rc,0);
+  const defVal = tpaRows.filter(r=>r.role==="Defensive / income").reduce((a,r)=>a+r.mv,0);
+  const satPct = bucketA>0 ? satVal/bucketA : 0;
+  const satPctIncl = bucketA>0 ? (satVal+defVal)/bucketA : 0;
+  const cryptoVal = byCat.crypto || 0;
+  const cashMonths = n("monthlySpend")>0 ? cashAll/n("monthlySpend") : null;
+  const creditUse = n("creditLimit")>0 ? creditDrawn/n("creditLimit") : null;
+  const overPos = tpaRows.filter(r=>r.sat && r.w*100 > guardrails.maxPositionPct);
+  const untagged = tpaRows.filter(r=>r.role==="Untagged");
+
+  const ukPen = n("ukPensionGbp")*n("gbpCad");
+  const eqLike = (byCat.equity||0)+(byCat.stock||0);
+  const wol = [
+    {l:"Liquid: equity-like",v:eqLike,c:CC.equity,eq:true},
+    {l:"UK pension (assumed 100% equity)",v:ukPen,c:"#0F6E56",eq:true},
+    {l:"Workplace DC plan (assumed equity)",v:n("workplaceDc"),c:"#639922",eq:true},
+    {l:"Liquid: bonds",v:byCat.bond||0,c:CC.bond},
+    {l:"DB plan (commuted value, bond-like)",v:n("dbCommuted"),c:"#534AB7"},
+    {l:"Crypto",v:cryptoVal,c:CC.crypto},
+    {l:"Gold",v:byCat.gold||0,c:CC.gold},
+    {l:"Cash",v:cashAll,c:CC.cash},
+  ].filter(x=>x.v>0);
+  const wolTotal = wol.reduce((a,x)=>a+x.v,0);
+  const wolEq = wolTotal>0 ? wol.filter(x=>x.eq).reduce((a,x)=>a+x.v,0)/wolTotal : 0;
+  const bucketC = ukPen + n("workplaceDc") + n("dbCommuted");
+  const setT = k => val => setTpa(t=>({...t,[k]:val}));
+
   // ========== RENDER ==========
 
   if (!rawHoldings) {
@@ -395,7 +522,8 @@ export default function Page() {
     );
   }
 
-  const TABS = ["overview","holdings","exposure","stocks","stress","rebalance"];
+  const TABS = ["overview","holdings","exposure","stocks","stress","rebalance","tpa","balance"];
+  const TAB_LABELS = {tpa:"TPA",balance:"Balance sheet"};
 
   return (
     <div style={{minHeight:"100vh",background:"var(--bg-secondary)",padding:"1rem"}}
@@ -428,7 +556,7 @@ export default function Page() {
               background:tab===t?"var(--bg-primary)":"transparent",
               border:tab===t?"0.5px solid var(--border)":"0.5px solid transparent",
               borderRadius:"var(--radius)",color:tab===t?"var(--text-primary)":"var(--text-secondary)",cursor:"pointer"}}>
-            {t.charAt(0).toUpperCase()+t.slice(1)}
+            {TAB_LABELS[t]||t.charAt(0).toUpperCase()+t.slice(1)}
           </button>
         ))}
       </div>
@@ -876,6 +1004,137 @@ export default function Page() {
               </div>
             </div>
           ))}
+        </div>
+      </div>}
+
+      {/* ====== TPA TAB ====== */}
+      {tab==="tpa"&&<div>
+        <div style={s.g("repeat(auto-fit, minmax(150px, 1fr))")}>
+          <M label="Portfolio volatility (illustrative)" value={pct(tpaRisk.vol)} sub="From placeholder assumptions"/>
+          <M label="Satellites, % of Bucket A" value={pct(satPct)} sub={`Limit ${tpa.satMaxPct}% · ${pct(satPctIncl)} incl. defensive`} color={satPct*100>tpa.satMaxPct?"var(--red)":"var(--green)"}/>
+          <M label="Satellites, share of risk" value={pct(satRisk)} sub={`From ${pct(totalCad>0?satVal/totalCad:0)} of value`}/>
+          <M label="Core (reference)" value={pct(totalCad>0?tpaRows.filter(r=>r.role==="Core (reference)").reduce((a,r)=>a+r.mv,0)/totalCad:0)} sub="Share of liquid portfolio"/>
+        </div>
+
+        <div style={{...s.card,marginTop:12}}>
+          <div style={s.sec}>Policy checks</div>
+          <Check ok={satPct*100<=tpa.satMaxPct} label={`Satellites at most ${tpa.satMaxPct}% of Bucket A (excludes core, cash and the defensive sleeve)`} detail={`${pct(satPct)} · ${fmt(satVal)}`}/>
+          <Check ok={overPos.length===0} label={`No satellite position above ${guardrails.maxPositionPct}% of the portfolio`} detail={overPos.length?overPos.map(r=>`${r.row} ${pct(r.w)}`).join(", "):"None"}/>
+          <Check ok={totalCad>0?cryptoVal/totalCad*100<=tpa.cryptoMaxPct:true} label={`Crypto weight at most ${tpa.cryptoMaxPct}%`} detail={pct(totalCad>0?cryptoVal/totalCad:0)}/>
+          <Check ok={n("cryptoCapCad")>0?cryptoVal<=n("cryptoCapCad"):null} label="Crypto under its dollar cap" detail={n("cryptoCapCad")>0?`${fmt(cryptoVal)} of ${fmt(n("cryptoCapCad"))}`:fmt(cryptoVal)}/>
+          <Check ok={cashMonths==null?null:cashMonths>=tpa.cashMonthsMin} label={`Cash buffer of ${tpa.cashMonthsMin}–${tpa.cashMonthsMax} months of spending (Bucket 0)`} detail={cashMonths==null?fmt(cashAll):`${cashMonths.toFixed(1)} months · ${fmt(cashAll)}`}/>
+          <Check ok={creditUse==null?(creditDrawn>0?null:true):creditUse<=0.25} label="Credit line drawn at most 25% of its limit" detail={creditUse==null?fmt(creditDrawn):`${pct(creditUse)} · ${fmt(creditDrawn)} of ${fmt(n("creditLimit"))}`}/>
+          <Check ok={untagged.length===0} label="Every position has a role" detail={untagged.length?untagged.map(r=>r.row).join(", "):"All tagged"}/>
+        </div>
+
+        <div style={{...s.card,marginTop:12,overflowX:"auto"}}>
+          <div style={s.sec}>Roles and risk contribution (ranked by share of risk)</div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr>
+              {["Position","Role","Replaces","Value","Weight","Share of risk","Risk ÷ weight",""].map(h=><th key={h} style={{...s.th,cursor:"default"}}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {tpaRows.map(r=>{
+                const ratio = r.w>0 ? r.rc/r.w : 0;
+                const sel = {fontSize:11,background:"var(--bg-secondary)",border:"0.5px solid var(--border)",borderRadius:"var(--radius)",padding:"2px 4px",color:"var(--text-primary)"};
+                return <tr key={r.row}>
+                  <td style={{...s.td,fontWeight:500}}>{r.row==="INCOME"?"Income":r.row}<div style={{fontSize:10,fontWeight:400,color:"var(--text-secondary)",maxWidth:170,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div></td>
+                  <td style={s.td}><select value={r.role} onChange={e=>setRoles(x=>({...x,[r.row]:e.target.value}))} style={sel}>{ROLES.map(o=><option key={o} value={o}>{o}</option>)}</select></td>
+                  <td style={s.td}><select value={r.replaces} onChange={e=>setReplaces(x=>({...x,[r.row]:e.target.value}))} style={sel}>{REPLACES.map(o=><option key={o} value={o}>{o}</option>)}</select></td>
+                  <td style={{...s.td,fontWeight:500}}>{fmt(r.mv)}</td>
+                  <td style={s.td}>{pct(r.w)}</td>
+                  <td style={{...s.td,fontWeight:500}}>{pct(r.rc)}</td>
+                  <td style={{...s.td,color:ratio>1.5?"var(--red)":"var(--text-primary)"}}>{r.w>0?ratio.toFixed(1)+"×":"—"}</td>
+                  <td style={s.td}>{r.sat&&r.w*100>guardrails.maxPositionPct&&<span style={{fontSize:9,color:"var(--red)",fontWeight:500}}>OVER {guardrails.maxPositionPct}%</span>}{r.sat&&r.w<0.02&&<span style={{fontSize:9,color:"var(--text-secondary)"}}>under 2%: grow or exit?</span>}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+          <div style={{marginTop:10,fontSize:11,color:"var(--text-secondary)"}}>
+            Share of risk is each position&apos;s contribution to portfolio variance, using placeholder assumptions: volatility of {Object.entries(RISK_VOL).filter(([,v])=>v>0).map(([k,v])=>`${k} ${(v*100).toFixed(0)}%`).join(", ")}, and fixed correlations between asset types. It shows relative size, not a forecast. &quot;Risk ÷ weight&quot; above 1 means the position adds more risk than its size suggests.
+          </div>
+        </div>
+
+        <div style={{...s.g("1fr 1fr"),marginTop:12}}>
+          <div style={s.card}>
+            <div style={s.sec}>Policy limits</div>
+            <NumIn label="Satellites, max % of Bucket A" value={tpa.satMaxPct} step={1} onChange={setT("satMaxPct")}/>
+            <NumIn label="Crypto, max % of portfolio" value={tpa.cryptoMaxPct} step={1} onChange={setT("cryptoMaxPct")}/>
+            <NumIn label="Crypto dollar cap (CAD)" value={tpa.cryptoCapCad} onChange={setT("cryptoCapCad")} hint="0 = not set"/>
+            <NumIn label="Cash buffer, min months" value={tpa.cashMonthsMin} step={0.5} onChange={setT("cashMonthsMin")}/>
+            <NumIn label="Cash buffer, max months" value={tpa.cashMonthsMax} step={0.5} onChange={setT("cashMonthsMax")}/>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:4}}>The single-position limit ({guardrails.maxPositionPct}%) is set on the Stocks tab.</div>
+          </div>
+          <div style={s.card}>
+            <div style={s.sec}>Liquidity inputs</div>
+            <NumIn label="Monthly spending (CAD)" value={tpa.monthlySpend} onChange={setT("monthlySpend")}/>
+            <NumIn label="Cash held elsewhere (CAD)" value={tpa.otherCash} onChange={setT("otherCash")} hint="chequing, savings"/>
+            <NumIn label="Credit line limit (CAD)" value={tpa.creditLimit} onChange={setT("creditLimit")}/>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:4}}>Credit line drawn is read from the CSV (a negative CAD balance): {fmt(creditDrawn)}. These amounts are stored in this browser only.</div>
+          </div>
+        </div>
+      </div>}
+
+      {/* ====== BALANCE SHEET TAB ====== */}
+      {tab==="balance"&&<div>
+        <div style={s.g("repeat(auto-fit, minmax(150px, 1fr))")}>
+          <M label="Whole-of-life assets" value={fmt(wolTotal)} sub="Liquid portfolio plus pensions"/>
+          <M label="Equity-like share" value={pct(wolEq)} sub="Of whole-of-life assets"/>
+          <M label="Locked (Bucket C)" value={pct(wolTotal>0?bucketC/wolTotal:0)} sub={fmt(bucketC)}/>
+          <M label="Credit line drawn" value={fmt(creditDrawn)} color={creditDrawn>0?"var(--red)":"var(--green)"} sub={creditUse!=null?`${pct(creditUse)} of limit`:"Set the limit on the TPA tab"}/>
+        </div>
+
+        <div style={{...s.g("1fr 1fr"),marginTop:12}}>
+          <div style={s.card}>
+            <div style={s.sec}>Whole-of-life asset mix</div>
+            <Bar h={18} segments={wol.map(x=>({label:x.l,pct:wolTotal>0?x.v/wolTotal:0,color:x.c}))}/>
+            <div style={{marginTop:10}}>
+              {wol.map(x=><div key={x.l} style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                <div style={{width:9,height:9,borderRadius:2,background:x.c,flexShrink:0}}/>
+                <span style={{fontSize:12,flex:1}}>{x.l}</span>
+                <span style={{fontSize:11,color:"var(--text-secondary)"}}>{fmt(x.v)}</span>
+                <span style={{fontSize:12,fontWeight:500,minWidth:42,textAlign:"right"}}>{pct(wolTotal>0?x.v/wolTotal:0)}</span>
+              </div>)}
+            </div>
+          </div>
+          <div style={s.card}>
+            <div style={s.sec}>Assets outside this CSV</div>
+            <NumIn label="UK pension (GBP)" value={tpa.ukPensionGbp} onChange={setT("ukPensionGbp")}/>
+            <NumIn label="CAD per GBP" value={tpa.gbpCad} step={0.01} onChange={setT("gbpCad")}/>
+            <NumIn label="Workplace DC plan (CAD)" value={tpa.workplaceDc} onChange={setT("workplaceDc")}/>
+            <NumIn label="DB plan commuted value (CAD)" value={tpa.dbCommuted} onChange={setT("dbCommuted")}/>
+            <NumIn label="Student loan balance (GBP)" value={tpa.studentLoanGbp} onChange={setT("studentLoanGbp")} hint="memo only"/>
+            <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:4}}>Stored in this browser only. Nothing here is sent anywhere.</div>
+          </div>
+        </div>
+
+        <div style={{...s.g("1fr 1fr"),marginTop:12}}>
+          <div style={s.card}>
+            <div style={s.sec}>Buckets</div>
+            {[{l:"Bucket 0: liquidity (cash)",v:cashAll,d:cashMonths!=null?`${cashMonths.toFixed(1)} months of spending, target ${tpa.cashMonthsMin}–${tpa.cashMonthsMax}`:"Set monthly spending on the TPA tab"},
+              {l:"Bucket A: long-term wealth",v:bucketA,d:"Liquid portfolio excluding cash"},
+              {l:"Bucket B: house",v:0,d:"Not set up yet"},
+              {l:"Bucket C: locked pensions",v:bucketC,d:"UK pension, workplace DC plan, DB plan"}].map(b=>
+              <div key={b.l} style={{padding:"6px 0",borderBottom:"0.5px solid var(--border)"}}>
+                <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:500}}>{b.l}</span><span style={{fontSize:12,fontWeight:500}}>{fmt(b.v)}</span></div>
+                <div style={{fontSize:11,color:"var(--text-secondary)"}}>{b.d}</div>
+              </div>)}
+          </div>
+          <div style={s.card}>
+            <div style={s.sec}>Liabilities and liquidity</div>
+            <div style={{padding:"6px 0",borderBottom:"0.5px solid var(--border)"}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:500}}>Credit line drawn</span><span style={{fontSize:12,fontWeight:500}}>{fmt(creditDrawn)}</span></div>
+              <div style={{fontSize:11,color:"var(--text-secondary)"}}>{n("creditLimit")>0?`Limit ${fmt(n("creditLimit"))}. If pledged assets fell 40%, the limit would be about ${fmt(n("creditLimit")*0.6)}.`:"Set the limit on the TPA tab to see headroom."}</div>
+            </div>
+            <div style={{padding:"6px 0",borderBottom:"0.5px solid var(--border)"}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:500}}>Student loan (memo)</span><span style={{fontSize:12,fontWeight:500}}>{fmt(n("studentLoanGbp")*n("gbpCad"))}</span></div>
+              <div style={{fontSize:11,color:"var(--text-secondary)"}}>Face value. Repayments are income-linked and the balance can be written off, so it is not counted as leverage here.</div>
+            </div>
+            <div style={{padding:"6px 0"}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:500}}>Net of credit line</span><span style={{fontSize:12,fontWeight:500}}>{fmt(wolTotal-creditDrawn)}</span></div>
+              <div style={{fontSize:11,color:"var(--text-secondary)"}}>Whole-of-life assets minus the credit line. Government pensions are not valued.</div>
+            </div>
+          </div>
         </div>
       </div>}
 
