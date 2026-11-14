@@ -6,7 +6,7 @@ A self-hosted portfolio monitoring tool for Wealthsimple users. Upload your hold
 
 - **CSV Upload**: Drag-and-drop your Wealthsimple holdings report
 - **Live Pricing**: Refresh prices via Yahoo Finance (free, no API key needed)
-- **Exposure Analysis**: Look-through sector, geographic, and individual stock exposures across all ETFs
+- **Exposure Analysis**: Look-through sector, geographic, and individual stock exposures across all ETFs, plus currency exposure, bond duration and equity beta (approximate, from data stored in the app)
 - **Stress Testing**: 7 preset macro scenarios (recession, rate hike, tech crash, etc.)
 - **Dynamic Rebalancing**: Adjustable targets for asset class, sub-asset, sector, and fee budget with auto-generated trade suggestions
 - **TPA tab**: Role tag for every position, what it replaces, share of portfolio risk (illustrative assumptions), and checks against your written policy (satellite budget, position limit, crypto cap, cash buffer, credit line)
