@@ -84,9 +84,9 @@ const STRESS = {
   recession:{name:"Recession",desc:"Broad equity decline, bonds rally, flight to safety.",impacts:{equity:-0.18,bond:0.04,gold:0.08,crypto:-0.35,stock:-0.22,cash:0,sectors:{Technology:-0.25,Financials:-0.20,"Consumer cyclical":-0.28,Industrials:-0.18,Materials:-0.15,Healthcare:-0.08,Communication:-0.15,"Consumer defensive":-0.05,Utilities:-0.05,Energy:-0.22,"Real estate":-0.20}}},
   rate_hike:{name:"Rate hike +100bps",desc:"Bonds fall, rate-sensitive equities drop, financials benefit.",impacts:{equity:-0.04,bond:-0.06,gold:-0.02,crypto:-0.08,stock:-0.05,cash:0,sectors:{Technology:-0.06,Utilities:-0.07,"Real estate":-0.08,Financials:0.02}}},
   inflation:{name:"Inflation spike",desc:"Real returns erode, commodities and gold benefit.",impacts:{equity:-0.06,bond:-0.08,gold:0.12,crypto:0.05,stock:-0.07,cash:-0.03,sectors:{Energy:0.08,Materials:0.06,Utilities:-0.05,"Consumer defensive":-0.04}}},
-  tech_crash:{name:"Tech correction −25%",desc:"Tech-heavy sell-off, rotation to value.",impacts:{equity:-0.10,bond:0.02,gold:0.03,crypto:-0.20,stock:-0.12,cash:0,sectors:{Technology:-0.25,Communication:-0.15,"Consumer cyclical":-0.10,Financials:0.02}}},
+  tech_crash:{name:"Tech correction â25%",desc:"Tech-heavy sell-off, rotation to value.",impacts:{equity:-0.10,bond:0.02,gold:0.03,crypto:-0.20,stock:-0.12,cash:0,sectors:{Technology:-0.25,Communication:-0.15,"Consumer cyclical":-0.10,Financials:0.02}}},
   canada_housing:{name:"Canada housing crisis",desc:"Canadian banks and REITs impacted.",impacts:{equity:-0.05,bond:-0.02,gold:0.04,crypto:-0.05,stock:-0.06,cash:0,sectors:{Financials:-0.15,"Real estate":-0.25},geo:{Canada:-0.10}}},
-  crypto_winter:{name:"Crypto winter −60%",desc:"Digital assets crash, minimal equity impact.",impacts:{equity:-0.01,bond:0.0,gold:0.02,crypto:-0.60,stock:-0.01,cash:0}},
+  crypto_winter:{name:"Crypto winter â60%",desc:"Digital assets crash, minimal equity impact.",impacts:{equity:-0.01,bond:0.0,gold:0.02,crypto:-0.60,stock:-0.01,cash:0}},
   goldilocks:{name:"Goldilocks rally",desc:"Perfect macro: growth + low inflation + stable rates.",impacts:{equity:0.12,bond:0.02,gold:-0.03,crypto:0.25,stock:0.15,cash:0,sectors:{Technology:0.18,"Consumer cyclical":0.14,Industrials:0.10}}},
 };
 
@@ -140,13 +140,10 @@ function parseWealthsimpleCSV(csvText) {
 }
 
 // FIX #4: Parse Wealthsimple activities CSV for DCA tracking
-// Wealthsimple activities CSV headers:
-// transaction_date,settlement_date,account_id,account_type,activity_type,activity_sub_type,direction,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
 function parseActivitiesCSV(csvText) {
   const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
   const trades = {};
   parsed.data.forEach(r => {
-    // Wealthsimple uses activity_type="Trade" and activity_sub_type="BUY"
     const actType = (r.activity_type || "").trim();
     const subType = (r.activity_sub_type || "").trim().toUpperCase();
     if (actType !== "Trade" || subType !== "BUY") return;
@@ -159,7 +156,6 @@ function parseActivitiesCSV(csvText) {
     if (!trades[sym]) trades[sym] = [];
     trades[sym].push({ date, qty, price, total });
   });
-  // Sort each symbol's trades by date
   Object.values(trades).forEach(arr => arr.sort((a, b) => a.date.localeCompare(b.date)));
   return trades;
 }
@@ -271,16 +267,20 @@ export default function Page() {
     }
   }, [rawHoldings, csvDate]);
 
+  // Auto-refresh prices when dashboard loads with holdings
+  useEffect(() => {
+    if (rawHoldings && rawHoldings.length > 0 && !livePrices && !priceLoading) {
+      fetchPrices();
+    }
+  }, [rawHoldings]);
+
   const handleFile = useCallback((file) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target.result;
-      // Detect if this is a Wealthsimple activities CSV vs holdings CSV
-      // Activities CSV header starts with "transaction_date,settlement_date,account_id..."
-      // Holdings CSV header starts with "Symbol,Name,Security Type..."
+      // Detect Wealthsimple activities CSV (has transaction_date header) vs holdings CSV
       const firstLine = text.split("\n")[0].toLowerCase();
       if (firstLine.includes("transaction_date") && firstLine.includes("activity_type")) {
-        // This is an activities/transactions CSV — parse for DCA tracking
         const trades = parseActivitiesCSV(text);
         if (Object.keys(trades).length > 0) {
           setActivitiesTrades(prev => ({...prev, ...trades}));
@@ -391,7 +391,7 @@ export default function Page() {
     const stockTarget = tgt("stocks") * totalCad;
     const stockDiff = stockTarget - actualStockVal;
     if(Math.abs(stockDiff) > totalCad * thD) {
-      list.push({action:stockDiff>0?"BUY":"SELL",sym:"—",name:"Individual stock picks",amount:Math.round(Math.abs(stockDiff)),reason:`Stocks target: ${targets.stocks}%, actual: ${(sPct*100).toFixed(1)}%`,category:"stock"});
+      list.push({action:stockDiff>0?"BUY":"SELL",sym:"â",name:"Individual stock picks",amount:Math.round(Math.abs(stockDiff)),reason:`Stocks target: ${targets.stocks}%, actual: ${(sPct*100).toFixed(1)}%`,category:"stock"});
     }
     const cryptoDiff=(tgt("crypto")*totalCad)-(byCat.crypto||0);
     if(Math.abs(cryptoDiff)>totalCad*thD)list.push({action:cryptoDiff>0?"BUY":"SELL",sym:"BTC/ETH",name:"Crypto",amount:Math.round(Math.abs(cryptoDiff)),reason:`Crypto target: ${targets.crypto}%, actual: ${(cPct*100).toFixed(1)}%`,category:"crypto"});
@@ -402,6 +402,13 @@ export default function Page() {
   const feeTrades = useMemo(()=>{if(!feeOverBudget)return[];const excess=totalFees-feeBudget;const exp=[...holdings].filter(h=>h.mer!=null&&h.mer>0.25&&h.acctClass==="Self-Directed").sort((a,b)=>b.annualFee-a.annualFee);const list=[];let saved=0;for(const h of exp){if(saved>=excess)break;list.push({sym:h.sym,name:h.name,mer:h.mer,fee:h.annualFee,suggestion:`Replace ${h.sym} (${h.mer}% MER) with lower-cost alternative`});saved+=h.annualFee;}return list;},[holdings,totalFees,feeBudget,feeOverBudget]);
 
   const sectorDiffs = useMemo(()=>sectorExp.map(se=>{const target=sectorTargets[se.s]||0;return {...se,target,diff:se.p*100-target};}).sort((a,b)=>Math.abs(b.diff)-Math.abs(a.diff)),[sectorExp,sectorTargets]);
+
+  const pnlAttrib = useMemo(() => {
+    if (!holdings.length) return [];
+    return holdings.filter(h => h.category !== "cash" && Math.abs(h.unrealCad) > 1)
+      .sort((a, b) => b.unrealCad - a.unrealCad).slice(0, 15);
+  }, [holdings]);
+  const maxPnl = useMemo(() => pnlAttrib.length > 0 ? Math.max(...pnlAttrib.map(h => Math.abs(h.unrealCad)), 1) : 1, [pnlAttrib]);
 
   // FIX #4: Compute DCA data for stock holdings
   const stockHoldings = holdings.filter(h => h.category === "stock");
@@ -627,6 +634,26 @@ export default function Page() {
             </div>
           </div>
         </div>
+      
+
+        {/* P&L Attribution */}
+        {pnlAttrib.length > 0 && <div style={{...s.card,marginTop:12}}>
+          <div style={s.sec}>P&L contribution by holding</div>
+          <div style={{display:"flex",gap:4,marginBottom:8}}>
+            <span style={{fontSize:11,display:"flex",alignItems:"center",gap:4}}><span style={{width:9,height:9,borderRadius:2,background:"#1D9E75"}}></span> Gain</span>
+            <span style={{fontSize:11,display:"flex",alignItems:"center",gap:4,marginLeft:8}}><span style={{width:9,height:9,borderRadius:2,background:"#E24B4A"}}></span> Loss</span>
+          </div>
+          {pnlAttrib.map(h=>{
+            const pctW=Math.abs(h.unrealCad)/maxPnl*100;
+            return <div key={h.sym+h.acctNum} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+              <span style={{fontSize:11,fontWeight:500,minWidth:55,textAlign:"right"}}>{h.sym}</span>
+              <div style={{flex:1,height:14}}>
+                <div style={{width:pctW+"%",height:14,background:h.unrealCad>=0?"#1D9E75":"#E24B4A",borderRadius:2,minWidth:2}}></div>
+              </div>
+              <span style={{fontSize:11,fontWeight:500,minWidth:65,textAlign:"right",color:h.unrealCad>=0?"#1D9E75":"#E24B4A"}}>{h.unrealCad>=0?"+":""}{fmt(h.unrealCad)}</span>
+            </div>;
+          })}
+        </div>}
       </div>}
 
       {/* ====== HOLDINGS TAB ====== */}
@@ -635,7 +662,7 @@ export default function Page() {
           <table style={{width:"100%",borderCollapse:"collapse"}}>
             <thead><tr>
               {[["sym","Symbol"],["name","Name"],["acct","Account"],["category","Type"],["mer","MER"],["mvCad","Value"],["unrealCad","P&L"],["change","Day %"],["annualFee","Fee/yr"]].map(([k,l])=>
-                <th key={k} style={s.th} onClick={()=>ts(k)}>{l}{sortCol===k?(sortDir>0?" ▲":" ▼"):""}</th>)}
+                <th key={k} style={s.th} onClick={()=>ts(k)}>{l}{sortCol===k?(sortDir>0?" â²":" â¼"):""}</th>)}
             </tr></thead>
             <tbody>
               {sorted.map((h,i)=><tr key={h.sym+h.acctNum+i}>
@@ -647,11 +674,11 @@ export default function Page() {
                   {h.acctClass === "Managed" && <span style={{marginLeft:4,fontSize:9,padding:"1px 5px",borderRadius:"var(--radius)",background:"#7F77DD1a",color:"#7F77DD",fontWeight:500}}>M</span>}
                 </td>
                 <td style={s.td}><span style={s.badge(CC[h.category]||"#888")}>{h.category}</span></td>
-                <td style={s.td}>{h.mer!=null?h.mer.toFixed(2)+"%":"—"}</td>
+                <td style={s.td}>{h.mer!=null?h.mer.toFixed(2)+"%":"â"}</td>
                 <td style={{...s.td,fontWeight:500}}>{fmt(h.mvCad)}</td>
                 <td style={{...s.td,color:h.unrealCad>=0?"var(--green)":"var(--red)"}}>{fmt(h.unrealCad)}</td>
-                <td style={{...s.td,color:h.change>0?"var(--green)":h.change<0?"var(--red)":"var(--text-secondary)"}}>{h.change!=null?h.change.toFixed(2)+"%":"—"}</td>
-                <td style={s.td}>{h.annualFee>0?fmtD(h.annualFee):"—"}</td>
+                <td style={{...s.td,color:h.change>0?"var(--green)":h.change<0?"var(--red)":"var(--text-secondary)"}}>{h.change!=null?h.change.toFixed(2)+"%":"â"}</td>
+                <td style={s.td}>{h.annualFee>0?fmtD(h.annualFee):"â"}</td>
               </tr>)}
             </tbody>
             <tfoot><tr>
@@ -748,7 +775,7 @@ export default function Page() {
                   <td style={s.td}>
                     <select value={stockThemes[h.sym]||""} onChange={e=>setStockThemes(t=>({...t,[h.sym]:e.target.value}))}
                       style={{fontSize:11,background:"var(--bg-secondary)",border:"0.5px solid var(--border)",borderRadius:"var(--radius)",padding:"2px 4px",color:"var(--text-primary)"}}>
-                      <option value="">—</option>
+                      <option value="">â</option>
                       {THEME_LIST.map(t=><option key={t} value={t}>{t}</option>)}
                     </select>
                   </td>
@@ -759,9 +786,9 @@ export default function Page() {
                     {posViol && <span style={{marginLeft:4,fontSize:9,color:"var(--red)"}}>OVER</span>}
                   </td>
                   {/* FIX #4: DCA data from activities CSV */}
-                  <td style={s.td}>{dca ? dca.firstBuy : <span style={{color:"var(--text-secondary)",fontSize:11}}>—</span>}</td>
-                  <td style={s.td}>{dca ? fmtD(dca.avgPrice) : <span style={{color:"var(--text-secondary)",fontSize:11}}>—</span>}</td>
-                  <td style={s.td}>{dca ? dca.buyCount : <span style={{color:"var(--text-secondary)",fontSize:11}}>—</span>}</td>
+                  <td style={s.td}>{dca ? dca.firstBuy : <span style={{color:"var(--text-secondary)",fontSize:11}}>â</span>}</td>
+                  <td style={s.td}>{dca ? fmtD(dca.avgPrice) : <span style={{color:"var(--text-secondary)",fontSize:11}}>â</span>}</td>
+                  <td style={s.td}>{dca ? dca.buyCount : <span style={{color:"var(--text-secondary)",fontSize:11}}>â</span>}</td>
                   <td style={s.td}>
                     <button onClick={()=>{const n=prompt("Notes for "+h.sym, stockNotes[h.sym]||"");if(n!=null)setStockNotes(sn=>({...sn,[h.sym]:n}));}}
                       style={{fontSize:10,background:"var(--bg-secondary)",border:"0.5px solid var(--border)",borderRadius:"var(--radius)",padding:"2px 6px",cursor:"pointer",color:"var(--text-primary)"}}>
@@ -895,7 +922,7 @@ export default function Page() {
               <div style={{fontSize:11,color:"var(--red)",marginTop:4}}>Targets sum to {targets.funds+targets.stocks+targets.crypto}% (should be 100%)</div>
             )}
             {cashPct > 0.001 && (
-              <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:6}}>Cash held: {pct(cashPct)} ({fmt(byCat.cash||0)}) — not included in allocation targets</div>
+              <div style={{fontSize:11,color:"var(--text-secondary)",marginTop:6}}>Cash held: {pct(cashPct)} ({fmt(byCat.cash||0)}) â not included in allocation targets</div>
             )}
           </div>
           <div style={s.card}>
