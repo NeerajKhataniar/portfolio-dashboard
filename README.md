@@ -9,6 +9,8 @@ A self-hosted portfolio monitoring tool for Wealthsimple users. Upload your hold
 - **Exposure Analysis**: Look-through sector, geographic, and individual stock exposures across all ETFs
 - **Stress Testing**: 7 preset macro scenarios (recession, rate hike, tech crash, etc.)
 - **Dynamic Rebalancing**: Adjustable targets for asset class, sub-asset, sector, and fee budget with auto-generated trade suggestions
+- **TPA tab**: Role tag for every position, what it replaces, share of portfolio risk (illustrative assumptions), and checks against your written policy (satellite budget, position limit, crypto cap, cash buffer, credit line)
+- **Balance sheet tab**: Whole-of-life asset mix including pensions you enter by hand, the four buckets, and liabilities. Amounts you type are stored in your browser only
 - **Persistent Settings**: All your targets and preferences saved in browser localStorage
 - **Dark Mode**: Automatic based on system preference
 
